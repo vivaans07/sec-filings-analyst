@@ -3,14 +3,16 @@
   python -m secqa.cli fetch            download each company's latest 10-K + XBRL facts (cached)
   python -m secqa.cli build            parse, chunk, and write data/index/chunks.jsonl + eval/xbrl_questions.jsonl
   python -m secqa.cli eval             score BM25, TF-IDF and hybrid retrieval -> results/retrieval.json
-  python -m secqa.cli search "query" --ticker AAPL
+  python -m secqa.cli eval --dense     ...plus dense embeddings and a BM25+TF-IDF+dense hybrid
+  python -m secqa.cli search "query" --ticker AAPL [--method dense]
 """
 import argparse
 import json
 
 from . import chunk, edgar, evalset, metrics, parse
 from .config import INDEX, RESULTS, ROOT, TICKERS
-from .retrieve import Index
+from .dense import DEFAULT_MODEL
+from .retrieve import DENSE_METHODS, SPARSE_METHODS, Index
 
 EVAL = ROOT / "eval"
 
@@ -55,10 +57,18 @@ def cmd_build(a):
     print(f"total: {len(chunks)} chunks, {len(questions)} questions")
 
 
+def _index(dense, model):
+    encoder = None
+    if dense:
+        from .dense import Encoder
+        encoder = Encoder(model)
+    return Index(_jsonl_read(INDEX / "chunks.jsonl"), encoder=encoder, cache_dir=INDEX)
+
+
 def cmd_eval(a):
-    idx = Index(_jsonl_read(INDEX / "chunks.jsonl"))
+    idx = _index(a.dense, a.model)
     qs = _jsonl_read(EVAL / "xbrl_questions.jsonl")
-    out = {m: metrics.evaluate(idx, qs, m) for m in ("bm25", "tfidf", "hybrid")}
+    out = {m: metrics.evaluate(idx, qs, m) for m in idx.methods}
     RESULTS.mkdir(exist_ok=True)
     (RESULTS / "retrieval.json").write_text(json.dumps(out, indent=1))
     for m, r in out.items():
@@ -66,7 +76,7 @@ def cmd_eval(a):
 
 
 def cmd_search(a):
-    idx = Index(_jsonl_read(INDEX / "chunks.jsonl"))
+    idx = _index(a.method in DENSE_METHODS, a.model)
     for c in idx.search(a.query, ticker=a.ticker, k=a.k, method=a.method):
         print(f"--- {c['id']}  Item {c['item']} ({c['kind']})\n{c['text'][:600]}\n")
 
@@ -76,9 +86,11 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     f = sub.add_parser("fetch"); f.add_argument("--tickers", nargs="*", default=TICKERS); f.set_defaults(fn=cmd_fetch)
     sub.add_parser("build").set_defaults(fn=cmd_build)
-    sub.add_parser("eval").set_defaults(fn=cmd_eval)
+    e = sub.add_parser("eval"); e.add_argument("--dense", action="store_true", help="also score dense retrieval")
+    e.add_argument("--model", default=DEFAULT_MODEL); e.set_defaults(fn=cmd_eval)
     s = sub.add_parser("search"); s.add_argument("query"); s.add_argument("--ticker"); s.add_argument("-k", type=int, default=5)
-    s.add_argument("--method", default="hybrid", choices=["bm25", "tfidf", "hybrid"]); s.set_defaults(fn=cmd_search)
+    s.add_argument("--method", default="hybrid", choices=SPARSE_METHODS + DENSE_METHODS)
+    s.add_argument("--model", default=DEFAULT_MODEL); s.set_defaults(fn=cmd_search)
     a = ap.parse_args(); a.fn(a)
 
 

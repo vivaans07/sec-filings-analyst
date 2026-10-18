@@ -12,4 +12,7 @@ build:
 eval:
 	$(PY) -m secqa.cli eval
 
+eval-dense:
+	$(PY) -m secqa.cli eval --dense
+
 all: fetch build eval

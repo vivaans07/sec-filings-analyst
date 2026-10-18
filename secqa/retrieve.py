@@ -1,6 +1,8 @@
 """Retrievers over chunks: BM25 (implemented here), TF-IDF cosine, and a hybrid that fuses the
-two rankings with reciprocal rank fusion (RRF). All accept an optional ticker to scope search
-to one company's filing, which is how a user would ask ("What was Apple's revenue...").
+two rankings with reciprocal rank fusion (RRF). With an encoder (see dense.py) the index also
+offers dense embedding search and a three-way hybrid of BM25, TF-IDF and dense. All accept an
+optional ticker to scope search to one company's filing, which is how a user would ask
+("What was Apple's revenue...").
 """
 import math
 import re
@@ -71,22 +73,45 @@ def rrf(*score_arrays, k=60):
     return fused
 
 
+SPARSE_METHODS = ("bm25", "tfidf", "hybrid")
+DENSE_METHODS = ("dense", "hybrid_dense")
+
+
 class Index:
-    def __init__(self, chunks):
+    def __init__(self, chunks, encoder=None, cache_dir=None):
         self.chunks = chunks
         texts = [f"{c['title']} {c['text']}" for c in chunks]
         self.tickers = np.array([c["ticker"] for c in chunks])
         self.bm25 = BM25(texts)
         self.tfidf = Tfidf(texts)
+        self.dense = None
+        if encoder is not None:
+            from .dense import Dense
+            self.dense = Dense(texts, encoder, ids=[c.get("id", str(i)) for i, c in enumerate(chunks)],
+                               cache_dir=cache_dir)
+
+    @property
+    def methods(self):
+        return SPARSE_METHODS + (DENSE_METHODS if self.dense else ())
 
     def search(self, query, ticker=None, k=5, method="hybrid"):
         allowed = (self.tickers == ticker) if ticker else None
+        if method in DENSE_METHODS and self.dense is None:
+            raise ValueError(f"method {method!r} needs an index built with an encoder")
         if method == "bm25":
             s = self.bm25.scores(query, allowed)
         elif method == "tfidf":
             s = self.tfidf.scores(query, allowed)
-        elif method == "hybrid":
-            s = rrf(self.bm25.scores(query, allowed), self.tfidf.scores(query, allowed))
+        elif method == "dense":
+            # cosine can be <= 0 and still be the best match, so only scoping removes candidates
+            s = self.dense.scores(query, allowed)
+            top = np.argsort(-s)[:k]
+            return [self.chunks[i] for i in top if np.isfinite(s[i])]
+        elif method in ("hybrid", "hybrid_dense"):
+            runs = [self.bm25.scores(query, allowed), self.tfidf.scores(query, allowed)]
+            if method == "hybrid_dense":
+                runs.append(self.dense.scores(query, allowed))
+            s = rrf(*runs)
             if allowed is not None:
                 s[~allowed] = -np.inf
         else:

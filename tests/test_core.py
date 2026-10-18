@@ -73,3 +73,45 @@ def test_rrf_and_ticker_scoping():
     assert idx.search("total revenue", ticker="AAPL", k=2)[0]["ticker"] == "AAPL"
     fused = rrf(np.array([3.0, 1.0]), np.array([1.0, 2.0]))
     assert fused.shape == (2,)
+
+
+class FakeEncoder:
+    """Bag-of-words vectors over a fixed vocabulary, with 'revenue' and 'sales' sharing a dimension,
+    so it behaves like an embedding model that knows they mean the same thing."""
+    name = "fake"
+    vocab = {"revenue": 0, "sales": 0, "risk": 1, "competition": 1, "cash": 2}
+
+    def encode(self, texts, *, query=False):
+        m = np.zeros((len(texts), 3), dtype=np.float32)
+        for r, t in enumerate(texts):
+            for w in t.lower().split():
+                if w in self.vocab:
+                    m[r, self.vocab[w]] += 1
+        n = np.linalg.norm(m, axis=1, keepdims=True)
+        return m / np.where(n == 0, 1, n)
+
+
+def test_dense_matches_synonyms_and_caches(tmp_path):
+    chunks = [{"id": "A-0", "ticker": "AAPL", "title": "", "text": "net sales grew"},
+              {"id": "A-1", "ticker": "AAPL", "title": "", "text": "risk from competition"},
+              {"id": "M-0", "ticker": "MSFT", "title": "", "text": "sales rose"}]
+    idx = Index(chunks, encoder=FakeEncoder(), cache_dir=tmp_path)
+    assert "dense" in idx.methods and "hybrid_dense" in idx.methods
+    # BM25 has no word overlap with "revenue"; dense still finds the net sales chunk
+    assert idx.search("revenue", ticker="AAPL", k=1, method="bm25") == []
+    assert idx.search("revenue", ticker="AAPL", k=1, method="dense")[0]["id"] == "A-0"
+    assert all(c["ticker"] == "AAPL" for c in idx.search("revenue", ticker="AAPL", k=3, method="hybrid_dense"))
+    assert len(list(tmp_path.glob("emb-fake-*.npy"))) == 1
+    Index(chunks, encoder=FakeEncoder(), cache_dir=tmp_path)   # second build reuses the cache
+    assert len(list(tmp_path.glob("emb-fake-*.npy"))) == 1
+
+
+def test_dense_methods_need_an_encoder():
+    idx = Index([{"ticker": "AAPL", "title": "", "text": "total net sales"}])
+    assert idx.methods == ("bm25", "tfidf", "hybrid")
+    try:
+        idx.search("sales", method="dense")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError")

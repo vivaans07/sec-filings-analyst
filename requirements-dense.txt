@@ -1,0 +1,3 @@
+# Optional: dense retrieval (python -m secqa.cli eval --dense). CPU-only torch keeps the install small:
+#   pip install --index-url https://download.pytorch.org/whl/cpu torch
+sentence-transformers>=3.0

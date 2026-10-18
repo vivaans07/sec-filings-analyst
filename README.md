@@ -8,7 +8,7 @@ from the filings themselves: every number in a 10-K's financial statements is al
 so for each company the benchmark asks questions like *"What was Apple's total revenue for fiscal
 2025?"* and knows the exact answer from the **same accession number** as the document being searched.
 
-> **Status:** in progress (week 1). Retrieval and the XBRL benchmark are implemented; answer
+> **Status:** in progress (week 1). Sparse and dense retrieval and the XBRL benchmark are implemented; answer
 > generation, faithfulness scoring and the dashboard are next. Results below fill in as runs complete.
 
 ## How it works
@@ -18,6 +18,7 @@ EDGAR (latest 10-K + XBRL company facts, cached)
    → parse:    HTML → text and table blocks → split into Items (1, 1A, 7, 7A, 8, ...)
    → chunk:    ~220-word windows inside an Item; tables kept whole with their caption
    → retrieve: BM25 (implemented here) · TF-IDF · hybrid via reciprocal rank fusion
+               · dense embeddings (bge-small) · BM25 + TF-IDF + dense hybrid
    → evaluate: auto-generated XBRL questions → hit@k and MRR per method and per metric
 ```
 
@@ -38,6 +39,11 @@ make fetch      # downloads 25 10-Ks + XBRL facts (cached under data/)
 make build      # parse, chunk, generate the question set
 make eval       # results/retrieval.json
 python -m secqa.cli search "supply chain risks" --ticker ADM
+
+# optional: dense retrieval (adds ~200 MB of CPU-only PyTorch)
+pip install --index-url https://download.pytorch.org/whl/cpu torch
+pip install -r requirements-dense.txt
+make eval-dense # adds dense and hybrid_dense rows; chunk embeddings are cached under data/index/
 ```
 
 ## Results
@@ -50,7 +56,8 @@ python -m secqa.cli search "supply chain risks" --ticker ADM
 - [x] 10-K parser: Item splitting that skips the table of contents, tables kept as rows
 - [x] BM25, TF-IDF and hybrid retrieval, scoped by company
 - [x] XBRL-grounded question set + hit@k / MRR
-- [ ] Dense embeddings and a reranker; compare against the sparse baselines
+- [x] Dense embeddings (bge-small) and a three-way hybrid, scored next to the sparse baselines
+- [ ] Cross-encoder reranker over the top candidates
 - [ ] Answer generation with citations to the chunk, plus numeric exact-match scoring
 - [ ] Faithfulness checks: does every number in the answer appear in the cited passage?
 - [ ] Hand-labeled narrative questions (risk factors, strategy, segments)
@@ -59,7 +66,7 @@ python -m secqa.cli search "supply chain risks" --ticker ADM
 ## Layout
 
 ```
-secqa/      edgar.py · parse.py · chunk.py · retrieve.py · evalset.py · metrics.py · cli.py
+secqa/      edgar.py · parse.py · chunk.py · retrieve.py · dense.py · evalset.py · metrics.py · cli.py
 tests/      unit tests for parsing, chunking, matching, fact selection and retrieval
 eval/       generated question sets (committed)
 results/    benchmark outputs (committed)
